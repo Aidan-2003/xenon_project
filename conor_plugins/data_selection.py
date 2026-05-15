@@ -375,6 +375,17 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
 
     pS2s_final, DEs_final = Other_quality_cuts(run_id, pS2s, DEs_left, show_plots = show_plots, fiducial_cut = fiducial_cut)
 
+    diagnose_selection(peaks_amended, pS2s_final, DEs_final, S1s)
+
+    a_ms = 39545.981
+    b_ms = 39555.981
+
+    a_ns = int(run_start + a_ms * 1e6)
+    b_ns = int(run_start + b_ms * 1e6)
+
+    st.plot_peaks(run_id["name"].values[0], time_range=(a_ns, b_ns))
+    plt.show()
+
     return pS2s_final, DEs_final, S1s, peaks_amended, vetos
 
 def prompt_electron_cut(pS2s, all_DEs, S1s = None, selection = 'new'):
@@ -543,3 +554,210 @@ def Other_quality_cuts(run_id, pS2s, DEs, show_plots = False, fiducial_cut = Fal
 
 
     return good_pS2s, DEs_cut
+
+##everything below here is functions I introduced to determine whether the selection in conors code makes sense or not
+def diagnose_selection(peaks_amended, pS2s_final, DEs_final, S1s=None):
+    """
+    Diagnostic checks for possible DE/pS2 misclassification.
+
+    Does not modify the arrays.
+    Only prints summaries.
+    """
+
+    def print_subtype_counts(arr, name):
+        print(f"\n{name}: {len(arr)} peaks")
+        if len(arr) == 0:
+            return
+
+        vals, counts = np.unique(arr["subtype"], return_counts=True)
+        for v, c in zip(vals, counts):
+            print(f"  subtype {v}: {c}")
+
+    print("\n" + "-" * 80)
+    print("Selection diagnostics")
+    print("-" * 80)
+
+    print_subtype_counts(DEs_final, "Final DEs")
+    print_subtype_counts(pS2s_final, "Final pS2s")
+
+    # Small/few-electron-like candidates independent of subtype.
+    small_candidates = peaks_amended[
+        (peaks_amended["area"] <= 500)
+        & (peaks_amended["n_electron_rec"] <= 5)
+    ]
+
+    selected_de_mask = np.isin(small_candidates["time"], DEs_final["time"])
+    selected_ps2_mask = np.isin(small_candidates["time"], pS2s_final["time"])
+
+    missed_small = small_candidates[
+        ~selected_de_mask
+        & ~selected_ps2_mask
+    ]
+
+    small_in_ps2s = small_candidates[selected_ps2_mask]
+
+    print_subtype_counts(small_candidates, "All small candidates: area <= 500 and n_electron_rec <= 5")
+    print_subtype_counts(small_in_ps2s, "Small candidates classified as pS2s")
+    print_subtype_counts(missed_small, "Small candidates selected as neither DE nor pS2")
+
+    # Suspicious DEs: large-ish or multi-electron.
+    suspicious_des = DEs_final[
+        (DEs_final["area"] > 150)
+        | (DEs_final["n_electron_rec"] > 2)
+        | np.isin(DEs_final["subtype"], [20, 271, 272, 273])
+    ]
+
+    print_subtype_counts(suspicious_des, "Suspicious final DEs: PH/fake or area>150 or n_electron_rec>2")
+
+    if len(suspicious_des) > 0:
+        print("\nSuspicious DE summary:")
+        print("  area min/median/max:",
+              np.min(suspicious_des["area"]),
+              np.median(suspicious_des["area"]),
+              np.max(suspicious_des["area"]))
+        print("  n_electron_rec unique:",
+              np.unique(suspicious_des["n_electron_rec"], return_counts=True))
+        print("  range_50p_area ms min/median/max:",
+              np.min(suspicious_des["range_50p_area"] / 1e6),
+              np.median(suspicious_des["range_50p_area"] / 1e6),
+              np.max(suspicious_des["range_50p_area"] / 1e6))
+
+    print("-" * 80 + "\n")
+
+def inspect_dense_bins(DEs, pS2s=None, bin_width_ms=10.0, threshold=5):
+    """
+    Inspect bins where many DE candidates occur within a short time span.
+    Useful for checking whether high-count bins are dominated by certain subtypes.
+    """
+
+    if len(DEs) == 0:
+        print("No DEs provided.")
+        return
+
+    t = DEs["time_since_start"]
+    bins = np.arange(np.min(t), np.max(t) + bin_width_ms, bin_width_ms)
+    counts, edges = np.histogram(t, bins=bins)
+
+    dense_indices = np.where(counts >= threshold)[0]
+
+    print(f"\nFound {len(dense_indices)} bins with >= {threshold} DEs in {bin_width_ms} ms bins.")
+
+    for idx in dense_indices:
+        a = edges[idx]
+        b = edges[idx + 1]
+
+        in_bin = DEs[(t >= a) & (t < b)]
+
+        print("\n" + "-" * 70)
+        print(f"Dense bin: {a:.3f} to {b:.3f} ms, N={len(in_bin)}")
+        print("Subtype counts:", np.unique(in_bin["subtype"], return_counts=True))
+        print("n_electron_rec counts:", np.unique(in_bin["n_electron_rec"], return_counts=True))
+        print("times ms:", np.sort(in_bin["time_since_start"]))
+        print("dt between DEs ms:", np.diff(np.sort(in_bin["time_since_start"])))
+        print("areas:", in_bin["area"])
+        print("range_50p_area ms:", in_bin["range_50p_area"] / 1e6)
+
+    if pS2s is not None:
+        near = pS2s[
+            (pS2s["time_since_start"] >= a - 500.0)
+            & (pS2s["time_since_start"] <= b + 50.0)
+            ]
+
+        print(f"Nearby pS2s from {a - 500:.1f} to {b + 50:.1f} ms: {len(near)}")
+        if len(near) > 0:
+            print("pS2 times ms:", near["time_since_start"])
+            print("pS2 areas:", near["area"])
+            print("pS2 subtypes:", np.unique(near["subtype"], return_counts=True))
+
+def make_alternative_de_samples(DEs_final):
+    """
+    Create stricter/looser DE samples for robustness checks.
+    """
+
+    samples = {}
+
+    samples["current"] = DEs_final
+
+    samples["strict_subtype_21"] = DEs_final[
+        DEs_final["subtype"] == 21
+    ]
+
+    samples["no_PH"] = DEs_final[
+        ~np.isin(DEs_final["subtype"], [20, 271, 272, 273])
+    ]
+
+    samples["one_to_two_electron"] = DEs_final[
+        (DEs_final["n_electron_rec"] >= 1)
+        & (DEs_final["n_electron_rec"] <= 2)
+    ]
+
+    samples["small_area"] = DEs_final[
+        (DEs_final["area"] <= 150)
+        & (DEs_final["n_electron_rec"] <= 2)
+    ]
+
+    return samples
+
+
+def inspect_dense_bins_with_prev_s2(DEs, pS2s, bin_width_ms=10.0, threshold=5):
+    t = DEs["time_since_start"]
+    bins = np.arange(np.min(t), np.max(t) + bin_width_ms, bin_width_ms)
+    counts, edges = np.histogram(t, bins=bins)
+
+    dense_indices = np.where(counts >= threshold)[0]
+    s2_times = pS2s["time_since_start"]
+
+    print(f"Found {len(dense_indices)} bins with >= {threshold} DEs in {bin_width_ms} ms bins.")
+
+    for idx in dense_indices:
+        a, b = edges[idx], edges[idx + 1]
+        in_bin = DEs[(t >= a) & (t < b)]
+
+        first_t = np.min(in_bin["time_since_start"])
+        prev_s2_idx = np.searchsorted(s2_times, first_t) - 1
+
+        print("\n" + "-" * 70)
+        print(f"Dense bin: {a:.3f} to {b:.3f} ms, N={len(in_bin)}")
+        print("Subtype counts:", np.unique(in_bin["subtype"], return_counts=True))
+        print("n_electron_rec counts:", np.unique(in_bin["n_electron_rec"], return_counts=True))
+        print("times ms:", np.sort(in_bin["time_since_start"]))
+        print("dt between DEs ms:", np.diff(np.sort(in_bin["time_since_start"])))
+        print("areas:", in_bin["area"])
+        print("range_50p_area ms:", in_bin["range_50p_area"] / 1e6)
+
+        if prev_s2_idx >= 0:
+            prev_s2 = pS2s[prev_s2_idx]
+            print("Previous pS2 time ms:", prev_s2["time_since_start"])
+            print("dt from previous pS2 to first DE ms:", first_t - prev_s2["time_since_start"])
+            print("Previous pS2 area:", prev_s2["area"])
+            print("Previous pS2 subtype:", prev_s2["subtype"])
+
+        near = pS2s[
+            (pS2s["time_since_start"] >= a - 500.0)
+            & (pS2s["time_since_start"] <= b + 50.0)
+        ]
+
+        print(f"Nearby pS2s within [-500,+50] ms: {len(near)}")
+        if len(near) > 0:
+            print("pS2 times ms:", near["time_since_start"])
+            print("pS2 areas:", near["area"])
+            print("pS2 subtypes:", np.unique(near["subtype"], return_counts=True))
+
+def collapse_close_clusters(DEs, min_separation_ms=0.1):
+    if len(DEs) == 0:
+        return DEs
+
+    order = np.argsort(DEs["time_since_start"])
+    DEs_sorted = DEs[order]
+
+    keep = np.ones(len(DEs_sorted), dtype=bool)
+    last_kept_time = DEs_sorted["time_since_start"][0]
+
+    for i in range(1, len(DEs_sorted)):
+        t = DEs_sorted["time_since_start"][i]
+        if t - last_kept_time < min_separation_ms:
+            keep[i] = False
+        else:
+            last_kept_time = t
+
+    return DEs_sorted[keep]
