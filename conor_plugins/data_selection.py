@@ -761,3 +761,50 @@ def collapse_close_clusters(DEs, min_separation_ms=0.1):
             last_kept_time = t
 
     return DEs_sorted[keep]
+
+def inspect_empty_predicted_region(peaks, DEs_final, pS2s_final, S1s,
+                                   start_ms, stop_ms):
+    region_all = peaks[
+        (peaks["time_since_start"] >= start_ms)
+        & (peaks["time_since_start"] < stop_ms)
+        ]
+
+    region_DE = DEs_final[
+        (DEs_final["time_since_start"] >= start_ms)
+        & (DEs_final["time_since_start"] < stop_ms)
+        ]
+
+    region_pS2 = pS2s_final[
+        (pS2s_final["time_since_start"] >= start_ms)
+        & (pS2s_final["time_since_start"] < stop_ms)
+        ]
+
+    region_S1 = S1s[
+        (S1s["time_since_start"] >= start_ms)
+        & (S1s["time_since_start"] < stop_ms)
+        ]
+
+    small = region_all[
+        (region_all["area"] <= 500)
+        & (region_all["n_electron_rec"] <= 5)
+        ]
+
+    small_de_like = small[
+        np.isin(small["subtype"], [20, 21, 23, 271, 272, 273])
+    ]
+
+    small_subtype21 = small[
+        small["subtype"] == 21
+        ]
+
+    return {
+        "start_ms": start_ms,
+        "stop_ms": stop_ms,
+        "n_all": len(region_all),
+        "n_DE": len(region_DE),
+        "n_pS2": len(region_pS2),
+        "n_S1": len(region_S1),
+        "n_small": len(small),
+        "n_small_de_like": len(small_de_like),
+        "n_small_subtype21": len(small_subtype21),
+    }

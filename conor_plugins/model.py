@@ -28,7 +28,7 @@ import time #TODO: Remove timings before end, since not necessary for others
 
 #Going to use this version of modelling to figure out new radius parameter for the power law
 
-def time_fitting(run_id, s2s, ses, s1_times = None, vetos = None, seconds_range = None, time_range = None, 
+def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, vetos = None, seconds_range = None, time_range = None,
                  plot = False, model = 'new', record_results = False, filename = "fit_results.csv"):
     """    
     This is the main fitting function. Put in the time range you want to fit over, 
@@ -76,6 +76,8 @@ def time_fitting(run_id, s2s, ses, s1_times = None, vetos = None, seconds_range 
 
         s2_region = s2s[(s2s['time_since_start'] >= start_ms) & (s2s['time_since_start'] <= end_ms)]
         se_region = ses[(ses['time_since_start'] >= start_ms) & (ses['time_since_start'] <= end_ms)]
+        source_like_region = source_like[(source_like["time_since_start"] >= start_ms) & (source_like["time_since_start"] <= end_ms)]
+        burst_source_region = burst_source[(burst_source["time_since_start"] >= start_ms) & (burst_source["time_since_start"] <= end_ms)]
 
         if s1_times is not None and len(s1_times) > 0:
             S1_region = s1_times[(s1_times >= start_ms) & (s1_times <= end_ms)]
@@ -123,6 +125,11 @@ def time_fitting(run_id, s2s, ses, s1_times = None, vetos = None, seconds_range 
         values, errors, covariance, BIC = cost_func_pure_exp(run_id, s2_region, se_region, S1_region,
                                                              seconds_range = seconds_range, model = model,
                                                              record_results = record_results, filename = filename)
+    elif model == 'extra_source':
+        values, errors, covariance, BIC = cost_func_exp_additive_three_source(run_id, s2_region, source_like_region, burst_source_region,
+                                                            se_region, S1_region,
+                                                            seconds_range = seconds_range, model = model,
+                                                            record_results = record_results, filename = filename)
     else:
         values, errors, covariance, BIC = cost_func(run_id, s2_region, se_region, S1_region,
                                                     seconds_range = seconds_range, model = model,
@@ -159,6 +166,16 @@ def time_fitting(run_id, s2s, ses, s1_times = None, vetos = None, seconds_range 
              "Value": [run_id['name'], start_ms / 1e3, end_ms / 1e3, values[0], errors[0], values[1], errors[1],
                        values[2], errors[2], values[3], errors[3], values[4], errors[4],
                        values[5], errors[5], len(s2_region), len(se_region),
+                       BIC]})
+    elif model == 'extra_source':
+        results_df = pd.DataFrame(
+            {"Parameter": ['Run ID', 'Start Time (s)', 'End Time (s)', 's', 's_err', 'n', 'n_err', 'tau', 'tau_err', 'f_exp',
+                           'f_exp_err','tmin', 'tmin_err', 'c', 'c_err', 'd', 'd_err', 'q_weak', 'q_weak_err',
+                           'q_burst', 'q_burst_err', 'k', 'k_err','Num pS2s', 'Num SEs', 'BIC'],
+             "Value": [run_id['name'], start_ms / 1e3, end_ms / 1e3, values[0], errors[0], values[1], errors[1],
+                       values[2], errors[2], values[3], errors[3], values[4], errors[4],
+                       values[5], errors[5], values[6], errors[6], values[7], errors[7], values[8], errors[8], values[9],
+                       errors[9], len(s2_region), len(se_region),
                        BIC]})
 
 
@@ -211,6 +228,13 @@ def time_fitting(run_id, s2s, ses, s1_times = None, vetos = None, seconds_range 
             total_rate, differential_rate = pure_exp_pdf(t, values[0], values[1], values[2], values[3], values[4], values[5],
                                                          s2_region, S1_region, window_start_ms, window_stop_ms, A = A, r0 = r0, r_p = r_p,
                                                          model = model)
+        elif model == 'extra_source':
+            window_start_ms = seconds_range[0]*1e3
+            window_stop_ms = seconds_range[1]*1e3
+            total_rate, differential_rate = new_exp_additive_three_source_pdf(t, values[0], values[1], values[2], values[3], values[4],
+                                                                              values[5], values[6], values[7], values[8], values[9],
+                                                                              s2_region, source_like_region, burst_source_region,
+                                                                              S1_region, window_start_ms, window_stop_ms, model = model)
         else: 
             A = None
             r0 = None
@@ -724,7 +748,8 @@ def cost_func_exp_additive(run_id, s2_roi, se_roi, s1_roi,
             filename=filename
         )
 
-    print(f"\nThe amount of single electrons in the region of interest is: {len(se_roi)}")
+    print(f"\nThe amount of single electrons used in the fit is: {len(se_times)}")
+    print(f"The amount of single electrons before live-mask is: {len(se_roi)}")
 
     return values, errors, m.covariance, BIC
 
@@ -2158,22 +2183,26 @@ def new_exp_additive_pdf(t_grid, s, n, tau, f_exp, tmin, c, d, k,
         s1_sorted = np.zeros(0, dtype=np.float64)
 
     # Build dead intervals matching _in_dead_s2/_in_dead_s1
-    dead_intervals = build_dead_intervals(window_start_ms, window_stop_ms, s2_t_sorted, s1_sorted, tmin)
+    if model == 'exp_additive':
+        dead_intervals = build_dead_intervals(window_start_ms, window_stop_ms, s2_t_sorted, s1_sorted, tmin)
 
-    # Convert dead intervals to live intervals
-    live_intervals = build_live_intervals(
-        window_start_ms,
-        window_stop_ms,
-        dead_intervals
-    )
+        # Convert dead intervals to live intervals
+        live_intervals = build_live_intervals(
+            window_start_ms,
+            window_stop_ms,
+            dead_intervals
+        )
 
-    live_starts = np.ascontiguousarray(
-        np.array([x[0] for x in live_intervals], dtype=np.float64)
-    )
+        live_starts = np.ascontiguousarray(
+            np.array([x[0] for x in live_intervals], dtype=np.float64)
+        )
 
-    live_stops = np.ascontiguousarray(
-        np.array([x[1] for x in live_intervals], dtype=np.float64)
-    )
+        live_stops = np.ascontiguousarray(
+            np.array([x[1] for x in live_intervals], dtype=np.float64)
+        )
+    else:
+        live_starts = window_start_ms
+        live_stops = window_stop_ms
 
     model_flag = 1 if model == 'radial' else 0
 
@@ -2270,6 +2299,402 @@ def _additive_kernel_integral_normed(u0, u1, n, tau, f_exp, tmin):
     pl_int = _powerlaw_kernel_integral_normed(u0, u1, tmin, n)
 
     return f_exp * exp_int + (1.0 - f_exp) * pl_int
+
+# ------------------------------------------------------------------------------------------------------------------
+#I'm gonna define an entirely new thing to take as an input some extra sources which are distinc from pS2's but may have
+#an impact on the actual fit in a positive way.
+
+@njit(cache=False)
+def _compute_norms_source_ne(q, n_electron_rec):
+    return q * n_electron_rec
+
+@njit(cache=False, parallel=True, fastmath=True)
+def _weak_source_like_pdf_basic_consistent(t_grid, q, n, tau, f_exp, tmin,
+                                       source_t_sorted, source_ne_sorted,
+                                       live_starts, live_stops):
+    # Guard invalid parameters
+    if tau <= 0.0 or n <= 1.0 or f_exp < 0.0 or f_exp > 1.0 or tmin <= 0.0:
+        diff_bad = np.zeros(t_grid.size)
+        return 0.0, diff_bad
+
+    # Compute source-dependent norms
+    norms = _compute_norms_source_ne(q, source_ne_sorted)
+
+    # Pointwise rate lambda(t_i)
+    diff = np.zeros(t_grid.size)
+
+    for i in prange(t_grid.size):
+        ti = t_grid[i]
+
+        acc = 0.0
+
+        for j in range(source_t_sorted.size):
+            dt = ti - source_t_sorted[j]
+
+            if dt > tmin:
+                acc += norms[j] * _additive_kernel_value_normed(
+                    dt, n, tau, f_exp, tmin
+                )
+
+        diff[i] += acc
+
+    # Integrated expected count Lambda over live intervals
+    total_rate = 0.0
+
+    # S2-correlated contribution
+    for j in range(source_t_sorted.size):
+        norm_j = norms[j]
+
+        for ell in range(live_starts.size):
+            u0 = live_starts[ell] - source_t_sorted[j]
+            u1 = live_stops[ell] - source_t_sorted[j]
+
+            total_rate += norm_j * _additive_kernel_integral_normed(
+                u0, u1, n, tau, f_exp, tmin
+            )
+
+    return total_rate, diff
+def weak_source_like_pdf(t_grid,
+        q, n, tau, f_exp, tmin,
+        source_like_struct,
+        live_starts,
+        live_stops, model = 'extra_source'):
+    source_t = source_like_struct['time_since_start'].astype(np.float64)
+
+    # Sort Sources consistently
+    order = np.argsort(source_t)
+    source_t_sorted = np.ascontiguousarray(source_t[order])
+
+    source_ne = source_like_struct["n_electron_rec"].astype(np.float64)
+    source_ne_sorted = np.ascontiguousarray(source_ne[order])
+
+
+    return _weak_source_like_pdf_basic_consistent(
+        np.ascontiguousarray(t_grid.astype(np.float64)),
+        float(q), float(n), float(tau), float(f_exp), float(tmin),
+        source_t_sorted, source_ne_sorted,
+        live_starts,
+        live_stops
+    )
+@njit(cache=False, parallel=True, fastmath=True)
+def _burst_source_pdf_basic_consistent(t_grid, q, n, tau,
+                                       f_exp, tmin, source_t_sorted,
+                                       source_ne_sorted, live_starts,
+                                       live_stops ):
+    # Guard invalid parameters
+    if tau <= 0.0 or n <= 1.0 or f_exp < 0.0 or f_exp > 1.0 or tmin <= 0.0:
+        diff_bad = np.zeros(t_grid.size)
+        return 0.0, diff_bad
+
+    # Compute source-dependent norms
+    norms = _compute_norms_source_ne(q, source_ne_sorted)
+
+    # Pointwise rate lambda(t_i)
+    diff = np.zeros(t_grid.size)
+
+    for i in prange(t_grid.size):
+        ti = t_grid[i]
+
+        acc = 0.0
+
+        for j in range(source_t_sorted.size):
+            dt = ti - source_t_sorted[j]
+
+            if dt > tmin:
+                acc += norms[j] * _additive_kernel_value_normed(
+                    dt, n, tau, f_exp, tmin
+                )
+
+        diff[i] += acc
+
+    # Integrated expected count Lambda over live intervals
+    total_rate = 0.0
+
+    # S2-correlated contribution
+    for j in range(source_t_sorted.size):
+        norm_j = norms[j]
+
+        for ell in range(live_starts.size):
+            u0 = live_starts[ell] - source_t_sorted[j]
+            u1 = live_stops[ell] - source_t_sorted[j]
+
+            total_rate += norm_j * _additive_kernel_integral_normed(
+                u0, u1, n, tau, f_exp, tmin
+            )
+
+    return total_rate, diff
+def burst_source_like_pdf(t_grid,
+        q, n, tau, f_exp, tmin,
+        burst_source_struct,
+        live_starts,
+        live_stops, model = 'extra_source'):
+    source_t = burst_source_struct['time_since_start'].astype(np.float64)
+
+    # Sort Sources consistently
+    order = np.argsort(source_t)
+    source_t_sorted = np.ascontiguousarray(source_t[order])
+
+    source_ne = burst_source_struct["n_electron_rec"].astype(np.float64)
+    source_ne_sorted = np.ascontiguousarray(source_ne[order])
+
+
+    return _burst_source_pdf_basic_consistent(
+        np.ascontiguousarray(t_grid.astype(np.float64)),
+        float(q), float(n), float(tau), float(f_exp), float(tmin),
+        source_t_sorted, source_ne_sorted,
+        live_starts,
+        live_stops
+    )
+def to_fit_exp_additive_three_source(
+    t, s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k,
+    pS2_roi, source_like_roi, burst_source_roi, s1_roi,
+    window_start_ms, window_stop_ms
+):
+    return new_exp_additive_three_source_pdf(
+        t, s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k,
+        pS2_roi, source_like_roi, burst_source_roi, s1_roi,
+        window_start_ms, window_stop_ms
+    )
+
+def new_exp_additive_three_source_pdf(
+    t_grid, s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k,
+    pS2s_struct, source_like_struct, burst_source_struct, s1_times_ms, window_start_ms,
+    window_stop_ms, model = 'extra_source'
+):
+    # Build common dead/live intervals
+    pS2_t = pS2s_struct["time_since_start"].astype(np.float64)
+    src_t = source_like_struct["time_since_start"].astype(np.float64)
+
+    if s1_times_ms is not None and len(s1_times_ms) > 0:
+        s1_sorted = np.sort(s1_times_ms.astype(np.float64))
+    else:
+        s1_sorted = np.zeros(0, dtype=np.float64)
+
+    dead_intervals = build_dead_intervals(
+        window_start_ms,
+        window_stop_ms,
+        np.sort(pS2_t),
+        s1_sorted,
+        tmin
+    )
+
+    live_intervals = build_live_intervals(
+        window_start_ms,
+        window_stop_ms,
+        dead_intervals
+    )
+
+    live_starts = np.ascontiguousarray(
+        np.array([x[0] for x in live_intervals], dtype=np.float64)
+    )
+    live_stops = np.ascontiguousarray(
+        np.array([x[1] for x in live_intervals], dtype=np.float64)
+    )
+
+    live_time = np.sum(live_stops - live_starts)
+
+    # pS2 term.
+    # WARNING: your existing new_exp_additive_pdf builds its own live intervals.
+    # This is acceptable for a temporary test, but not fully consistent.
+    total_pS2, rate_pS2 = new_exp_additive_pdf(
+        t_grid,
+        s, n, tau, f_exp, tmin, c, d, 0.0,
+        pS2s_struct,
+        s1_times_ms,
+        live_starts,
+        live_stops, model = model
+    )
+
+    # source-like term, using common live intervals
+    total_weak, rate_weak = weak_source_like_pdf(
+        t_grid,
+        q_weak, n, tau, f_exp, tmin,
+        source_like_struct,
+        live_starts,
+        live_stops
+    )
+
+    # large source term, also using common live intervals
+    total_burst, rate_burst = burst_source_like_pdf(t_grid,
+                                                    q_burst, n, tau, f_exp, tmin,
+                                                    burst_source_struct,
+                                                    live_starts,
+                                                    live_stops)
+
+    total_background = k * live_time
+
+    total_rate = total_pS2 + total_weak + total_burst + total_background
+    rate = rate_pS2 + rate_weak + rate_burst + k
+
+    return total_rate, rate
+
+def multi_exp_additive_three_source_wrap(t, p, s2_roi, source_like_roi, burst_source_roi, s1_roi, window_start_ms, window_stop_ms):
+    """
+    Wrapper for extra source model.
+
+    Expected parameter order:
+        s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k
+    """
+
+    s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k = p
+
+    return new_exp_additive_three_source_pdf(
+        t,
+        s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k,
+        s2_roi,
+        source_like_roi,
+        burst_source_roi,
+        s1_roi,
+        window_start_ms,
+        window_stop_ms,
+        model = 'extra_source'
+    )
+def cost_func_exp_additive_three_source(run_id, s2_roi, source_like_roi, burst_source_roi, se_roi, s1_roi,
+                           seconds_range=None,
+                           model='extra_source',
+                           record_results=False,
+                           filename="fit_results_extra_source.csv"):
+    """
+    Separate cost function for additive exponential + power-law delayed-electron fit with extra source rate.
+    """
+
+    print(f"\nRunning the extra_source cost function now")
+
+    if model != 'extra_source':
+        raise ValueError(
+            f"cost_func_exp_additive is only for model='extra_source', got {model!r}"
+        )
+
+    fdt = 2.3
+
+    # For fair comparison with your old 'new' model, start with 5*fdt.
+    # You can later test 3*fdt.
+    tmin = 5 * fdt
+
+    window_start_ms = seconds_range[0] * 1e3
+    window_stop_ms = seconds_range[1] * 1e3
+
+    se_times = se_roi['time_since_start']
+
+    if hasattr(s1_roi, "dtype") and s1_roi.dtype.names is not None:
+        s1_times = s1_roi["time_since_start"].astype(float)
+    else:
+        s1_times = np.asarray(s1_roi, dtype=float)
+
+    dead_intervals = build_dead_intervals(
+        window_start_ms,
+        window_stop_ms,
+        s2_roi["time_since_start"],
+        s1_times,
+        tmin
+    )
+
+    live_intervals = build_live_intervals(
+        window_start_ms,
+        window_stop_ms,
+        dead_intervals
+    )
+
+    live_mask = make_live_mask(se_times, live_intervals)
+    se_times = se_times[live_mask]
+
+    c1 = cost.ExtendedUnbinnedNLL(
+        se_times,
+        lambda t, s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k: to_fit_exp_additive_three_source(
+            t, s, n, tau, f_exp, tmin, c, d, q_weak, q_burst, k,
+            s2_roi, source_like_roi, burst_source_roi, s1_roi, window_start_ms, window_stop_ms
+        )
+    )
+
+    m = Minuit(
+        c1,
+        s=1.5,
+        n=1.35,
+        tau=45.0,
+        f_exp=0.3,
+        tmin=tmin,
+        c=0.8,
+        d=1.4,
+        q_weak= 0.01,
+        q_burst= 0.09,
+        k=0.01
+    )
+
+    m.limits['s'] = (0, None)
+    m.limits['n'] = (1.2, 5.0)
+    m.limits['tau'] = (0.2, 300.0)
+    m.limits['f_exp'] = (0.0, 1.0)
+    m.limits['c'] = (0.0, 5.0)
+    m.limits['d'] = (-5.0, 5.0)
+    m.limits['q_weak'] = (0.0, None)
+    m.limits['q_burst'] = (0.0, None)
+    m.limits['k'] = (0.0, 10.0)
+
+    m.fixed['k'] = False
+    m.fixed['tmin'] = True
+
+    def run_minimization(m, strategy=1, retries=0):
+        m.strategy = strategy
+        m.migrad(ncall=3000)
+
+        if (not m.valid) and retries < 3:
+            print(f"Minimization failed, retry #{retries + 1} with adjusted parameters")
+
+            if retries == 0:
+                m.values['f_exp'] = 0.05
+                m.values['tau'] = 5.0
+            elif retries == 1:
+                m.values['f_exp'] = 0.5
+                m.values['tau'] = 20.0
+            elif retries == 2:
+                m.values['s'] = 0.1
+                strategy = 2
+
+            return run_minimization(m, strategy=strategy, retries=retries + 1)
+
+        return m
+
+    start_3 = time.time()
+    m = run_minimization(m)
+    print(f"minimization takes {(time.time() - start_3):.4f} s")
+
+    n_obs = len(se_times)
+    n_free = sum(not m.fixed[p] for p in m.parameters)
+
+    BIC = (m.fval) + (np.log(n_obs) * n_free)
+
+    print(f"Minimisation Status: \n{m.fmin}")
+
+    values, errors = m.values, m.errors
+
+    fit_params = ['s', 'n', 'tau', 'f_exp', 'tmin', 'c', 'd', 'q_weak', 'q_burst', 'k']
+
+    results_df = pd.DataFrame({
+        "Parameter": fit_params,
+        "Value": [values[p] for p in fit_params],
+        "Error": [errors[p] for p in fit_params],
+    })
+
+    print("Fitted Parameters and Errors:")
+    print(results_df)
+
+    if record_results:
+        results_log(
+            run_id,
+            s2_roi,
+            values,
+            errors,
+            BIC,
+            m.fmin.has_made_posdef_covar,
+            seconds_range=seconds_range,
+            filename=filename
+        )
+
+    print(f"\nThe amount of single electrons used in the fit is: {len(se_times)}")
+    print(f"The amount of single electrons before live-mask is: {len(se_roi)}")
+
+    return values, errors, m.covariance, BIC
+#--------------------------------------------------------------------------------------------------------------------
 
 def results_log(run_id, s2_roi, values, errors, bic_val, forced, 
                 seconds_range = None, filename = "fit_results.csv"):
