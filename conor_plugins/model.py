@@ -29,7 +29,7 @@ import time #TODO: Remove timings before end, since not necessary for others
 #Going to use this version of modelling to figure out new radius parameter for the power law
 
 def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, vetos = None, seconds_range = None, time_range = None,
-                 plot = False, model = 'new', record_results = False, filename = "fit_results.csv"):
+                 plot = False, model = 'new', record_results = False, filename = "fit_results.csv", history_ms = 15000.0):
     """    
     This is the main fitting function. Put in the time range you want to fit over, 
     it will return the minimised values etc., you can then put those into the cdf_plot function.
@@ -73,14 +73,15 @@ def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, v
 
     if seconds_range is not None:
         start_ms, end_ms = seconds_range[0] * int(1e3), seconds_range[1] * int(1e3)
+        source_start_ms = max(0, start_ms - history_ms)
 
-        s2_region = s2s[(s2s['time_since_start'] >= start_ms) & (s2s['time_since_start'] <= end_ms)]
-        se_region = ses[(ses['time_since_start'] >= start_ms) & (ses['time_since_start'] <= end_ms)]
-        source_like_region = source_like[(source_like["time_since_start"] >= start_ms) & (source_like["time_since_start"] <= end_ms)]
-        burst_source_region = burst_source[(burst_source["time_since_start"] >= start_ms) & (burst_source["time_since_start"] <= end_ms)]
+        s2_region = s2s[(s2s['time_since_start'] >= source_start_ms) & (s2s['time_since_start'] <= end_ms)]
+        se_region = ses[(ses['time_since_start'] >= source_start_ms) & (ses['time_since_start'] <= end_ms)]
+        source_like_region = source_like[(source_like["time_since_start"] >= source_start_ms) & (source_like["time_since_start"] <= end_ms)]
+        burst_source_region = burst_source[(burst_source["time_since_start"] >= source_start_ms) & (burst_source["time_since_start"] <= end_ms)]
 
         if s1_times is not None and len(s1_times) > 0:
-            S1_region = s1_times[(s1_times >= start_ms) & (s1_times <= end_ms)]
+            S1_region = s1_times[(s1_times >= source_start_ms) & (s1_times <= end_ms)]
         else:
             S1_region = np.empty(0, dtype=np.float64)
 
@@ -110,30 +111,35 @@ def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, v
     print(f"Corresponding to the seconds range of: {start_ms/1e3:.0f} to {end_ms/1e3:.0f}")
 
     if model == 'radial':
-        values, errors, covariance, BIC = cost_func_radial(run_id, s2_region, se_region, S1_region, 
+        values, errors, covariance, BIC, fval = cost_func_radial(run_id, s2_region, se_region, S1_region,
                                                 seconds_range = seconds_range,
                                                 record_results = record_results, filename = filename)
     elif model == 'exp':
-        values, errors, covariance, BIC = cost_func_exp_powerlaw(run_id, s2_region, se_region, S1_region,
+        values, errors, covariance, BIC, fval = cost_func_exp_powerlaw(run_id, s2_region, se_region, S1_region,
                                                     seconds_range = seconds_range, model = model,
-                                                    record_results = record_results, filename = filename)
+                                                    record_results = record_results, filename = filename, history_ms = history_ms)
     elif model == 'exp_additive':
-        values, errors, covariance, BIC = cost_func_exp_additive(run_id, s2_region, se_region, S1_region,
+        values, errors, covariance, BIC, fval = cost_func_exp_additive(run_id, s2_region, se_region, S1_region,
                                                     seconds_range = seconds_range, model = model,
-                                                    record_results = record_results, filename = filename)
+                                                    record_results = record_results, filename = filename, history_ms = history_ms)
     elif model == 'pure_exp':
-        values, errors, covariance, BIC = cost_func_pure_exp(run_id, s2_region, se_region, S1_region,
+        values, errors, covariance, BIC, fval = cost_func_pure_exp(run_id, s2_region, se_region, S1_region,
                                                              seconds_range = seconds_range, model = model,
-                                                             record_results = record_results, filename = filename)
+                                                             record_results = record_results, filename = filename, history_ms = history_ms)
     elif model == 'extra_source':
-        values, errors, covariance, BIC = cost_func_exp_additive_three_source(run_id, s2_region, source_like_region, burst_source_region,
+        values, errors, covariance, BIC, fval = cost_func_exp_additive_three_source(run_id, s2_region, source_like_region, burst_source_region,
                                                             se_region, S1_region,
                                                             seconds_range = seconds_range, model = model,
                                                             record_results = record_results, filename = filename)
+    elif model == "multi_exp":
+        values, errors, covariance, BIC, fval = cost_func_multi_exp(run_id, s2_region,se_region,S1_region,
+                                                            seconds_range=seconds_range,model=model,
+                                                            record_results=record_results,filename=filename,history_ms=history_ms,)
     else:
-        values, errors, covariance, BIC = cost_func(run_id, s2_region, se_region, S1_region,
+        values, errors, covariance, BIC, fval = cost_func(run_id, s2_region, se_region, S1_region,
                                                     seconds_range = seconds_range, model = model,
-                                                    record_results = record_results, filename = filename)
+                                                    record_results = record_results, filename = filename, history_ms = history_ms)
+
     
     if model == 'radial':
         results_df = pd.DataFrame({
@@ -177,6 +183,29 @@ def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, v
                        values[5], errors[5], values[6], errors[6], values[7], errors[7], values[8], errors[8], values[9],
                        errors[9], len(s2_region), len(se_region),
                        BIC]})
+    elif model == "multi_exp":
+        results_df = pd.DataFrame({
+            "Parameter": [
+                "Run ID", "Start Time (s)", "End Time (s)",
+                "s", "s_err",
+                "n", "n_err",
+                "tmin", "tmin_err",
+                "c", "c_err",
+                "d", "d_err",
+                "k", "k_err",
+                "Num pS2s", "Num SEs", "BIC",
+            ],
+            "Value": [
+                run_id["name"], start_ms / 1e3, end_ms / 1e3,
+                values[0], errors[0],
+                values[1], errors[1],
+                values[2], errors[2],
+                values[3], errors[3],
+                values[4], errors[4],
+                values[5], errors[5],
+                len(s2_region), len(se_region), BIC,
+            ],
+        })
 
 
     else:
@@ -245,11 +274,11 @@ def time_fitting(run_id, s2s, source_like, burst_source, ses, s1_times = None, v
                                       values[4], values[5], s2_region, S1_region, window_start_ms, window_stop_ms, A = A, r0 = r0, r_p = r_p, model = model)
         #TODO: If you call this with plot = False and then want to plot the CDF, you need to change results_df to values, or else return it also
         #Didn't do this yet because there were too many instances of calling this time_fitting function as it stands in my notebooks, sorry
-        return results_df, values, covariance, total_rate, differential_rate, BIC
+        return results_df, values, covariance, total_rate, differential_rate, BIC, fval
 
 #------------------------------------------------------------------------------------------------------------
 
-def cost_func(run_id, s2_roi, se_roi, s1_roi, seconds_range = None, model = 'new', record_results = False, filename = "fit_results.csv"):
+def cost_func(run_id, s2_roi, se_roi, s1_roi, seconds_range = None, model = 'new', record_results = False, filename = "fit_results.csv", history_ms = 15000.0):
     """
     CURRENTLY DEPRECATED SOZ, JUST PUT plot=True IN TIME_FITTING FUNCTION IF YOU WANT THE CDF PLOTTED
 
@@ -301,7 +330,7 @@ def cost_func(run_id, s2_roi, se_roi, s1_roi, seconds_range = None, model = 'new
 
     c1 = cost.ExtendedUnbinnedNLL(se_times, 
                                   lambda t, s, n, tmin, c, d, k: to_fit(t, s, n, tmin, c,d, k, s2_roi, s1_roi,
-                                                                        window_start_ms,window_stop_ms))
+                                                                        window_start_ms,window_stop_ms, history_ms))
     
     m = Minuit(c1, s = 0.1, n = 1.5, tmin = tmin, c = 0.5, d = 0.5, k = 0.0)
     #I usually find changing s to like 0.5 or just something small like 20e-10 can help if things are going wrong
@@ -370,9 +399,9 @@ def cost_func(run_id, s2_roi, se_roi, s1_roi, seconds_range = None, model = 'new
         results_log(run_id, s2_roi, values, errors, BIC, m.fmin.has_made_posdef_covar, 
                     seconds_range = seconds_range, filename = filename) #Also record to a file
     
-    print(f"\nThe amount of single electrons in the region of interest is: {len(se_roi)}")
-    print
-    return values, errors, m.covariance, BIC
+    print(f"\nThe amount of single electrons used in the fit is: {len(se_times)}")
+    print(f"The amount of single electrons before live-mask is: {len(se_roi)}")
+    return values, errors, m.covariance, BIC, m.fval
 
 #------------------------------------------------------------------------------------------------------------
 
@@ -476,7 +505,7 @@ def cost_func_radial(run_id, s2_roi, se_roi, s1_roi, seconds_range = None, recor
                     seconds_range = seconds_range, filename = filename) #Also record to a file
     
     print(f"The amount of single electrons in the region of interest is: {len(se_roi)}")
-    return values, errors, m.covariance, BIC
+    return values, errors, m.covariance, BIC, m.fval
 
 #------------------------------------------------------------------------------------------------------------
 
@@ -484,14 +513,14 @@ def cost_func_exp_powerlaw(run_id, s2_roi, se_roi, s1_roi,
                            seconds_range=None,
                            model='exp',
                            record_results=False,
-                           filename="fit_results_exp_powerlaw.csv"):
+                           filename="fit_results_exp_powerlaw.csv", history_ms=15000.0):
     """
-    Separate cost function for exponential-to-power-law delayed electron fit.
+    Separate cost function for power-law-to-exponential delayed electron fit.
 
     Does not modify or interfere with cost_func.
     """
 
-    print(f"\nRunning the exponential-to-power-law cost function now")
+    print(f"\nRunning the power-law-to-exponential cost function now")
     window_start_ms = seconds_range[0] * 1e3
     window_stop_ms = seconds_range[1] * 1e3
     if model == 'count':
@@ -529,11 +558,11 @@ def cost_func_exp_powerlaw(run_id, s2_roi, se_roi, s1_roi,
             t, s, n, tau, t_switch, tmin, c, d, k,
             s2_roi, s1_roi,
             window_start_ms,
-            window_stop_ms
+            window_stop_ms, history_ms
         )
     )
 
-    m = Minuit(c1,s=0.1,n=1.5,tau=10.0,t_switch=t_switch,tmin=tmin,c=0.5,d=0.5,k=0.0)
+    m = Minuit(c1,s=1.1,n=1.5,tau=200.0,t_switch=t_switch,tmin=tmin,c=0.8,d=1.3,k=0.01)
 
     m.limits['n'] = (1.0001, 5)
     m.limits['s'] = (0, None)
@@ -612,7 +641,7 @@ def cost_func_exp_powerlaw(run_id, s2_roi, se_roi, s1_roi,
         )
     print(f"\nThe amount of single electrons in the region of interest is: {len(se_roi)}")
 
-    return values, errors, m.covariance, BIC
+    return values, errors, m.covariance, BIC, m.fval
 
 #------------------------------------------------------------------------------------------------------------
 
@@ -620,7 +649,7 @@ def cost_func_exp_additive(run_id, s2_roi, se_roi, s1_roi,
                            seconds_range=None,
                            model='exp_additive',
                            record_results=False,
-                           filename="fit_results_exp_additive.csv"):
+                           filename="fit_results_exp_additive.csv", history_ms=15000.0):
     """
     Separate cost function for additive exponential + power-law delayed-electron fit.
     """
@@ -664,7 +693,7 @@ def cost_func_exp_additive(run_id, s2_roi, se_roi, s1_roi,
         se_times,
         lambda t, s, n, tau, f_exp, tmin, c, d, k: to_fit_exp_additive(
             t, s, n, tau, f_exp, tmin, c, d, k,
-            s2_roi, s1_roi, window_start_ms, window_stop_ms
+            s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms
         )
     )
 
@@ -751,14 +780,14 @@ def cost_func_exp_additive(run_id, s2_roi, se_roi, s1_roi,
     print(f"\nThe amount of single electrons used in the fit is: {len(se_times)}")
     print(f"The amount of single electrons before live-mask is: {len(se_roi)}")
 
-    return values, errors, m.covariance, BIC
+    return values, errors, m.covariance, BIC, m.fval
 
 #------------------------------------------------------------------------------------------------------------
 def cost_func_pure_exp(run_id, s2_roi, se_roi, s1_roi,
                            seconds_range=None,
                            model='pure_exp',
                            record_results=False,
-                           filename="fit_results_pure_exp.csv"):
+                           filename="fit_results_pure_exp.csv", history_ms = 15000.0):
     """
     Separate cost function for pure exponential delayed electron fit.
     """
@@ -802,7 +831,7 @@ def cost_func_pure_exp(run_id, s2_roi, se_roi, s1_roi,
         se_times,
         lambda t, s, tau, tmin, c, d, k: to_fit_pure_exp(
             t, s, tau, tmin, c, d, k,
-            s2_roi, s1_roi, window_start_ms, window_stop_ms
+            s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms
         )
     )
 
@@ -881,7 +910,151 @@ def cost_func_pure_exp(run_id, s2_roi, se_roi, s1_roi,
 
     print(f"\nThe amount of single electrons in the region of interest is: {len(se_roi)}")
 
-    return values, errors, m.covariance, BIC
+    return values, errors, m.covariance, BIC, m.fval
+#------------------------------------------------------------------------------------------------------------
+def cost_func_multi_exp(
+    run_id,
+    s2_roi,
+    se_roi,
+    s1_roi,
+    seconds_range=None,
+    model="multi_exp",
+    record_results=False,
+    filename="fit_results_multi_exp.csv",
+    history_ms=15000.0,
+):
+    """
+    Cost function for many-exponential power-law-like model.
+    """
+
+    print(f"\nRunning the multi-exponential power-law-like cost function now")
+
+    if model != "multi_exp":
+        raise ValueError(
+            f"cost_func_multi_exp is only for model='multi_exp', got {model!r}"
+        )
+
+    fdt = 2.3
+    tmin = 5 * fdt
+
+    window_start_ms = seconds_range[0] * 1e3
+    window_stop_ms = seconds_range[1] * 1e3
+
+    se_times = se_roi["time_since_start"]
+
+    dead_intervals = build_dead_intervals(
+        window_start_ms,
+        window_stop_ms,
+        s2_roi["time_since_start"],
+        s1_roi,
+        tmin,
+    )
+
+    live_intervals = build_live_intervals(
+        window_start_ms,
+        window_stop_ms,
+        dead_intervals,
+    )
+
+    live_mask = make_live_mask(se_times, live_intervals)
+    se_times = se_times[live_mask]
+
+    c1 = cost.ExtendedUnbinnedNLL(
+        se_times,
+        lambda t, s, n, tmin, c, d, k: to_fit_multi_exp(
+            t,
+            s,
+            n,
+            tmin,
+            c,
+            d,
+            k,
+            s2_roi,
+            s1_roi,
+            window_start_ms,
+            window_stop_ms,
+            history_ms,
+        ),
+    )
+
+    m = Minuit(
+        c1,
+        s=0.1,
+        n=1.5,
+        tmin=tmin,
+        c=0.5,
+        d=0.5,
+        k=0.0,
+    )
+
+    m.limits["s"] = (0.0, None)
+    m.limits["n"] = (1.0001, 5.0)
+    m.limits["c"] = (0.0, 5.0)
+    m.limits["d"] = (-5.0, 5.0)
+    m.limits["k"] = (0.0, 10.0)
+
+    m.fixed["tmin"] = True
+    m.fixed["k"] = False
+
+    def run_minimization(m, strategy=1, retries=0):
+        m.strategy = strategy
+        m.migrad(ncall=3000)
+
+        if (not m.valid) and retries < 3:
+            print(f"Minimization failed, retry #{retries + 1} with adjusted parameters")
+
+            if retries == 0:
+                m.values["d"] = -1.0
+            elif retries == 1:
+                m.values["s"] = 20e-10
+            elif retries == 2:
+                m.values["s"] = 0.1
+                strategy = 2
+
+            return run_minimization(m, strategy=strategy, retries=retries + 1)
+
+        return m
+
+    start_3 = time.time()
+    m = run_minimization(m)
+    print(f"minimization takes {(time.time() - start_3):.4f} s")
+
+    n_obs = len(se_times)
+    n_free = sum(not m.fixed[p] for p in m.parameters)
+
+    BIC = m.fval + np.log(n_obs) * n_free
+
+    print(f"Minimisation Status: \n{m.fmin}")
+
+    values, errors = m.values, m.errors
+
+    fit_params = ["s", "n", "tmin", "c", "d", "k"]
+
+    results_df = pd.DataFrame({
+        "Parameter": fit_params,
+        "Value": [values[p] for p in fit_params],
+        "Error": [errors[p] for p in fit_params],
+    })
+
+    print("Fitted Parameters and Errors:")
+    print(results_df)
+
+    if record_results:
+        results_log(
+            run_id,
+            s2_roi,
+            values,
+            errors,
+            BIC,
+            m.fmin.has_made_posdef_covar,
+            seconds_range=seconds_range,
+            filename=filename,
+        )
+
+    print(f"\nThe amount of single electrons used in the fit is: {len(se_times)}")
+    print(f"The amount of single electrons before live-mask is: {len(se_roi)}")
+
+    return values, errors, m.covariance, BIC, m.fval
 #------------------------------------------------------------------------------------------------------------
 def cdf_plot(s2_roi, se_roi, s1_roi, values, cov, model = 'new',
              seconds_range = None, ax = None, plot_zoom = (0, 0),
@@ -1237,13 +1410,13 @@ def mask_dead_zones(p_in, t_abs, s1_roi, s2_roi, window_start_ms, window_stop_ms
 #cost.Extended... needs a function to be passed in to work, but it's finicky
 #Kind of the same deal for using 'propagate', just a slightly different form.
 
-def to_fit(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, model = 'new'):
-    return new_power_law_pdf(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, model = model)
+def to_fit(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms, model = 'new'):
+    return new_power_law_pdf(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms, model = model)
 #-----------------------------------------------------------------------------------------------------------
 
-def multi_powerlaw_wrap(t, p, s2_roi, s1_roi,window_start_ms, window_stop_ms, model = 'new'):
+def multi_powerlaw_wrap(t, p, s2_roi, s1_roi,window_start_ms, window_stop_ms, history_ms, model = 'new'):
     s, n, tmin, c, d, k = p
-    return new_power_law_pdf(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, model = model)
+    return new_power_law_pdf(t, s, n, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms, model = model)
 
 #-----------------------------------------------------------------------------------------------------------
 
@@ -1258,13 +1431,13 @@ def multi_powerlaw_wrap_radial(t, p, s2_roi, s1_roi):
 
 # -----------------------------------------------------------------------------------------------------------
 
-def to_fit_exp(t, s, n, tau, t_switch, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms):
-    return exp_power_law_pdf(t, s, n, tau, t_switch, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, model = 'exp')
+def to_fit_exp(t, s, n, tau, t_switch, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
+    return exp_power_law_pdf(t, s, n, tau, t_switch, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms, model = 'exp')
 
 # -----------------------------------------------------------------------------------------------------------
-def multi_exp_powerlaw_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms):
+def multi_exp_powerlaw_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
     """
-    Wrapper for the exponential-to-power-law model.
+    Wrapper for the power-law-to-exponential model.
 
     Expected parameter order:
         s, n, tau, t_switch, tmin, c, d, k
@@ -1272,19 +1445,19 @@ def multi_exp_powerlaw_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_m
 
     s, n, tau, t_switch, tmin, c, d, k = p
 
-    return exp_power_law_pdf(t,s, n, tau, t_switch, tmin, c, d, k,s2_roi,s1_roi,window_start_ms,window_stop_ms)
+    return exp_power_law_pdf(t,s, n, tau, t_switch, tmin, c, d, k,s2_roi,s1_roi,window_start_ms,window_stop_ms, history_ms)
 
 # -----------------------------------------------------------------------------------------------------------
 
-def to_fit_exp_additive(t, s, n, tau, f_exp, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms):
+def to_fit_exp_additive(t, s, n, tau, f_exp, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
     return new_exp_additive_pdf(
         t, s, n, tau, f_exp, tmin, c, d, k,
-        s2_roi, s1_roi, window_start_ms, window_stop_ms
+        s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms
     )
 
 # -----------------------------------------------------------------------------------------------------------
 
-def multi_exp_additive_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms):
+def multi_exp_additive_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
     """
     Wrapper for additive exponential + power-law model.
 
@@ -1301,16 +1474,17 @@ def multi_exp_additive_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_m
         s1_roi,
         window_start_ms,
         window_stop_ms,
+        history_ms,
         model = 'exp_additive'
     )
 # -----------------------------------------------------------------------------------------------------------
-def to_fit_pure_exp(t, s, tau, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms):
+def to_fit_pure_exp(t, s, tau, tmin, c, d, k, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
     return pure_exp_pdf(
         t, s, tau, tmin, c, d, k,
-        s2_roi, s1_roi, window_start_ms, window_stop_ms
+        s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms
     )
 # -----------------------------------------------------------------------------------------------------------
-def multi_pure_exp_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms):
+def multi_pure_exp_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms, history_ms):
     """
     Wrapper for pure exponential pdf
 
@@ -1327,7 +1501,71 @@ def multi_pure_exp_wrap(t, p, s2_roi, s1_roi, window_start_ms, window_stop_ms):
         s1_roi,
         window_start_ms,
         window_stop_ms,
+        history_ms,
         model = 'pure_exp'
+    )
+# -----------------------------------------------------------------------------------------------------------
+def to_fit_multi_exp(
+    t,
+    s,
+    n,
+    tmin,
+    c,
+    d,
+    k,
+    s2_roi,
+    s1_roi,
+    window_start_ms,
+    window_stop_ms,
+    history_ms,
+):
+    return multi_exp_pdf(
+        t,
+        s,
+        n,
+        tmin,
+        c,
+        d,
+        k,
+        s2_roi,
+        s1_roi,
+        window_start_ms,
+        window_stop_ms,
+        history_ms=history_ms,
+        model="multi_exp",
+    )
+
+# -----------------------------------------------------------------------------------------------------------
+def multi_exp_wrap(
+    t,
+    p,
+    s2_roi,
+    s1_roi,
+    window_start_ms,
+    window_stop_ms,
+    history_ms,
+):
+    """
+    Expected parameter order:
+        s, n, tmin, c, d, k
+    """
+
+    s, n, tmin, c, d, k = p
+
+    return multi_exp_pdf(
+        t,
+        s,
+        n,
+        tmin,
+        c,
+        d,
+        k,
+        s2_roi,
+        s1_roi,
+        window_start_ms,
+        window_stop_ms,
+        history_ms=history_ms,
+        model="multi_exp",
     )
 # -----------------------------------------------------------------------------------------------------------
 #Buncha numba functions 
@@ -1336,7 +1574,7 @@ def _compute_norms_basic(s, c, d, areas, ranges):
     # areas in phe, ranges in ms (you already divide by 1e6 for range_50p_area upstream)
     return s * (areas ** c) * (ranges ** d)
 
-@njit
+@njit(cache=False)
 def _compute_norms_radial(s, c, d, A, r0, r_p, areas, ranges, r): #Computing the norms for each pS2 can be a big slow-down, so this helps
     return s * (areas ** c) * (ranges ** d) * (1 / (1 + np.exp(A*(r - r0) / r_p)))
 
@@ -1392,6 +1630,26 @@ def _last_leq(arr, x):
         else:
             hi = mid - 1
     return idx
+
+@njit(cache=False)
+def _lower_bound(arr, x):
+    """
+    First index i such that arr[i] >= x.
+    Equivalent to np.searchsorted(arr, x, side='left'),
+    but Numba-safe.
+    """
+    lo = 0
+    hi = arr.size
+
+    while lo < hi:
+        mid = (lo + hi) // 2
+
+        if arr[mid] < x:
+            lo = mid + 1
+        else:
+            hi = mid
+
+    return lo
 
 @njit(cache=False)
 def _in_dead_s2(t, s2_t, tmin):
@@ -1485,7 +1743,7 @@ def make_live_mask(times_ms, live_intervals):
 @njit(cache=False, parallel=True, fastmath=True)
 def _powerlaw_pdf_basic_consistent(t_grid, s, n, tmin, c, d, k,
                                    A, r0, r_p, s2_t_sorted, s2_area_sorted, s2_rng_sorted, 
-                                   s2_r_sorted, s1_t_sorted, model_flag, live_starts, live_stops):
+                                   s2_r_sorted, s1_t_sorted, model_flag, live_starts, live_stops, history_ms):
     """
     Core Numba evaluator for both new/old and radial models.
     """
@@ -1503,6 +1761,8 @@ def _powerlaw_pdf_basic_consistent(t_grid, s, n, tmin, c, d, k,
     # PDF evaluation
     for i in prange(t_grid.size):
         ti = t_grid[i]
+        left = _lower_bound(s2_t_sorted, ti - history_ms)
+        right = _lower_bound(s2_t_sorted, ti - tmin)
 
         # Dead zone → zero rate
         # if _in_dead_s2(ti, s2_t_sorted, tmin) or _in_dead_s1(ti, s1_t_sorted):
@@ -1510,7 +1770,7 @@ def _powerlaw_pdf_basic_consistent(t_grid, s, n, tmin, c, d, k,
         #     continue
 
         acc = 0.0
-        for j in range(s2_t_sorted.size):
+        for j in range(left, right):
             dt = ti - s2_t_sorted[j]
             if dt > tmin:
                 acc += norms[j] * scale * (dt / tmin)**(-n)
@@ -1543,6 +1803,14 @@ def _powerlaw_pdf_basic_consistent(t_grid, s, n, tmin, c, d, k,
         for ell in range(live_starts.size):
             u0 = live_starts[ell] - s2_t_sorted[j]
             u1 = live_stops[ell] - s2_t_sorted[j]
+            # No contribution if the whole interval is before tmin
+            # or after the finite source history.
+            if u1 <= tmin or u0 >= history_ms:
+                continue
+
+            # Truncate the source contribution at history_ms.
+            if u1 > history_ms:
+                u1 = history_ms
 
             total_rate += norms[j] * _powerlaw_kernel_integral_normed(u0,u1,tmin,n)
     return total_rate, diff
@@ -1550,7 +1818,7 @@ def _powerlaw_pdf_basic_consistent(t_grid, s, n, tmin, c, d, k,
 def new_power_law_pdf(t_grid, s, n, tmin, c, d, k,
                       pS2s_struct, s1_times_ms,
                       window_start_ms, window_stop_ms,
-                      A=None, r0=None, r_p=None,
+                      A=None, r0=None, r_p=None, history_ms = 15000.0,
                       model='new'):
     """
     Wrapper for the Numba-compiled power-law evaluator.
@@ -1616,7 +1884,7 @@ def new_power_law_pdf(t_grid, s, n, tmin, c, d, k,
         s2_t_sorted, s2_area_scaled, s2_rng_scaled, s2_r_sorted,
         s1_sorted,
         model_flag,
-        live_starts, live_stops
+        live_starts, live_stops, float(history_ms)
     )
 @njit(cache=False, parallel=True, fastmath=True)
 def _exp_powerlaw_pdf_basic_consistent(
@@ -1627,7 +1895,8 @@ def _exp_powerlaw_pdf_basic_consistent(
     s1_t_sorted,
     model_flag,
     live_starts,
-    live_stops
+    live_stops, 
+    history_ms
 ):
     """
      Exponential-near-start + power-law-late model.
@@ -1647,45 +1916,67 @@ def _exp_powerlaw_pdf_basic_consistent(
         )
 
     diff = np.full(t_grid.size, k)
-
-    # Pointwise rate
+    
     for i in prange(t_grid.size):
         ti = t_grid[i]
+        left = _lower_bound(s2_t_sorted, ti - history_ms)
+        right = _lower_bound(s2_t_sorted, ti - tmin)
 
+        # Dead zone → zero rate
         # if _in_dead_s2(ti, s2_t_sorted, tmin) or _in_dead_s1(ti, s1_t_sorted):
         #     diff[i] = 0.0
         #     continue
 
         acc = 0.0
-
-        for j in range(s2_t_sorted.size):
+        for j in range(left, right):
             dt = ti - s2_t_sorted[j]
-
             if dt > tmin:
                 acc += norms[j] * _hybrid_kernel_value_normed(dt,n,tau,tmin,t_switch)
 
         diff[i] += acc
 
-    # Integrated expected event count over the fit window
+    # Correction term (as in GOF), this is how Conor did it, below these comments is my version
+    # cut = np.zeros(s2_t_sorted.size)
+    # for j in range(s2_t_sorted.size):
+    #     up = _cdf_scalar(s2_t_sorted[j] + tmin, tmin, n)
+    #     lo = _cdf_scalar(s2_t_sorted[j],         tmin, n)
+    #     cut[j] = norms[j] * (up - lo)
+    #
+    # # Live time (same approximation as GOF)
+    # total_time = t_grid[-1] - t_grid[0]
+    # live = total_time - s2_t_sorted.size * tmin - s1_t_sorted.size * 4.6
+    # if live < 0.0:
+    #     live = 0.0
+    #
+    # total_rate = norms.sum() - cut.sum() + k * live
+
     total_rate = 0.0
 
-    #background term
+    # Background contribution over live intervals
     for ell in range(live_starts.size):
-        total_rate += k*(live_stops[ell] - live_starts[ell])
+        total_rate += k * (live_stops[ell] - live_starts[ell])
 
-    #pS2 term
+    # S2-correlated contribution over live intervals
     for j in range(s2_t_sorted.size):
         for ell in range(live_starts.size):
             u0 = live_starts[ell] - s2_t_sorted[j]
             u1 = live_stops[ell] - s2_t_sorted[j]
+            # No contribution if the whole interval is before tmin
+            # or after the finite source history.
+            if u1 <= tmin or u0 >= history_ms:
+                continue
 
-            total_rate += norms[j] * _hybrid_kernel_integral_normed(u0,u1,n,tau,tmin,t_switch)
+            # Truncate the source contribution at history_ms.
+            if u1 > history_ms:
+                u1 = history_ms
+
+            total_rate += norms[j] * _hybrid_kernel_integral_normed(u0,u1,n, tau, tmin, t_switch)
 
     return total_rate, diff
 def exp_power_law_pdf(t_grid, s, n, tau, t_switch, tmin, c, d, k, pS2s_struct, s1_times_ms,window_start_ms, window_stop_ms,
                       A = None, r0 = None,
-                      r_p = None, model = 'exp'):
-    """Wrapper for the Numba-compiled exponential-to-power-law evaluator."""
+                      r_p = None, model = 'exp', history_ms = 15000.0):
+    """Wrapper for the Numba-compiled power-law-to-exponential evaluator."""
 
     # Extract S2 fields
     s2_t = pS2s_struct['time_since_start'].astype(np.float64)
@@ -1748,28 +2039,39 @@ def exp_power_law_pdf(t_grid, s, n, tau, t_switch, tmin, c, d, k, pS2s_struct, s
         s1_sorted,
         model_flag,
         live_starts,
-        live_stops
+        live_stops,
+        float(history_ms)
     )
 # defining how we go about integrating for a hybrid exponential+power law
 
 @njit(cache=False)
 def _hybrid_kernel_total_integral(n, tau, tmin, t_switch):
     """
-    Integral of the unnormalized hybrid kernel over [tmin, infinity).
+    Integral of the unnormalized power-law-to-exponential switch kernel
+    over [tmin, infinity).
+
+    g(u) = 0 for u <= tmin
+
+    g(u) = (u/tmin)^(-n)
+           for tmin < u < t_switch
+
+    g(u) = (t_switch/tmin)^(-n) * exp(-(u - t_switch)/tau)
+           for u >= t_switch
+
+    The exponential branch is matched continuously to the power law
+    at u = t_switch.
     """
 
     if n <= 1.0 or tau <= 0.0 or tmin <= 0.0 or t_switch <= tmin:
         return 0.0
 
-    M = np.exp((t_switch - tmin) / tau)
+    M = (t_switch/tmin)**(-n)
 
-    # exponential part: tmin to t_switch
-    exp_int = M * tau * (
-        1.0 - np.exp(-(t_switch - tmin) / tau)
-    )
+    # exponential part: t_switch to infinite
+    exp_int = M * tau
 
-    # power-law part: t_switch to infinity
-    pl_int = t_switch / (n - 1.0)
+    # power-law part: t_min to t_switch
+    pl_int = (tmin / (n - 1.0))*(1.0-(t_switch/tmin)**(1.0-n))
 
     return exp_int + pl_int
 
@@ -1782,25 +2084,30 @@ def _hybrid_kernel_value_normed(dt, n, tau, tmin, t_switch):
     if I <= 0.0:
         return 0.0
 
-    M = np.exp((t_switch - tmin) / tau)
+    M = (t_switch/tmin)**(-n)
 
     if dt < t_switch:
-        g = M * np.exp(-(dt - tmin) / tau)
+        g = (dt/tmin)**(-n)
     else:
-        g = (dt/t_switch) ** (-n)
+        g = M*np.exp(-(dt-t_switch)/tau)
 
     return g / I
 @njit(cache=False)
 def _hybrid_kernel_integral(u0, u1, n, tau, tmin, t_switch):
     """
-    Integral of the hybrid exponential-to-power-law kernel over delay interval [u0, u1].
+    Integral of the unnormalized power-law-to-exponential switch kernel
+    over delay interval [u0, u1].
 
     g(u) = 0 for u <= tmin
-    g(u) = M exp(-(u - tmin)/tau) for tmin < u < t_switch
-    g(u) = u^(-n) for u >= t_switch
 
-    The exponential is matched continuously to the power law at t_switch.
+    g(u) = (u/tmin)^(-n)
+           for tmin < u < t_switch
+
+    g(u) = (t_switch/tmin)^(-n) * exp(-(u - t_switch)/tau)
+           for u >= t_switch
     """
+    if n <= 1.0 or tau <= 0.0 or tmin <= 0.0 or t_switch <= tmin:
+        return 0.0
 
     if u1 <= tmin:
         return 0.0
@@ -1817,33 +2124,33 @@ def _hybrid_kernel_integral(u0, u1, n, tau, tmin, t_switch):
     total = 0.0
 
     # Matching factor
-    M = np.exp((t_switch - tmin) / tau)
+    M = (t_switch/tmin)**(-n)
 
     # Exponential section
-    if lo < t_switch:
+    if hi > t_switch:
         exp_lo = lo
         exp_hi = hi
 
-        if exp_hi > t_switch:
-            exp_hi = t_switch
+        if exp_lo < t_switch:
+            exp_lo = t_switch
 
         if exp_hi > exp_lo:
             total += M * tau * (
-                np.exp(-(exp_lo - tmin) / tau)
-                - np.exp(-(exp_hi - tmin) / tau)
+                np.exp(-(exp_lo - t_switch) / tau)
+                - np.exp(-(exp_hi - t_switch) / tau)
             )
 
     # Power-law section
-    if hi > t_switch:
+    if lo < t_switch:
         pl_lo = lo
         pl_hi = hi
 
-        if pl_lo < t_switch:
-            pl_lo = t_switch
+        if pl_hi > t_switch:
+            pl_hi = t_switch
 
         if pl_hi > pl_lo:
             # For n > 1:
-            total += (t_switch ** n) * (
+            total += (tmin ** n) * (
                 pl_lo ** (1.0 - n) - pl_hi ** (1.0 - n)
             ) / (n - 1.0)
 
@@ -1864,7 +2171,7 @@ def _pure_exp_pdf_basic_consistent(t_grid, s, tau, tmin,
                                   A, r0, r_p,
                                   s2_t_sorted, s2_area_sorted, s2_rng_sorted,
                                   s2_r_sorted, s1_t_sorted, model_flag,
-                                  live_starts, live_stops):
+                                  live_starts, live_stops, history_ms):
     """
     Core pure exponential evaluator.
     Pointwise rate:
@@ -1899,45 +2206,43 @@ def _pure_exp_pdf_basic_consistent(t_grid, s, tau, tmin,
 
     for i in prange(t_grid.size):
         ti = t_grid[i]
+        left = _lower_bound(s2_t_sorted, ti - history_ms)
+        right = _lower_bound(s2_t_sorted, ti - tmin)
 
-        # Dead zone -> zero rate
+        # Dead zone → zero rate
         # if _in_dead_s2(ti, s2_t_sorted, tmin) or _in_dead_s1(ti, s1_t_sorted):
         #     diff[i] = 0.0
         #     continue
 
         acc = 0.0
-
-        for j in range(s2_t_sorted.size):
+        for j in range(left, right):
             dt = ti - s2_t_sorted[j]
-
             if dt > tmin:
-                acc += norms[j] * _exp_kernel_value_normed(
-                    dt, tau, tmin
-                )
+                acc += norms[j] * _exp_kernel_value_normed(dt, tau, tmin)
 
         diff[i] += acc
 
-        # Integrated expected count Lambda over live intervals
     total_rate = 0.0
 
-    # Background contribution
+    # Background contribution over live intervals
     for ell in range(live_starts.size):
-        dt_live = live_stops[ell] - live_starts[ell]
+        total_rate += k * (live_stops[ell] - live_starts[ell])
 
-        if dt_live > 0.0:
-            total_rate += k * dt_live
-
-    # S2-correlated contribution
+    # S2-correlated contribution over live intervals
     for j in range(s2_t_sorted.size):
-        norm_j = norms[j]
-
         for ell in range(live_starts.size):
             u0 = live_starts[ell] - s2_t_sorted[j]
             u1 = live_stops[ell] - s2_t_sorted[j]
+            # No contribution if the whole interval is before tmin
+            # or after the finite source history.
+            if u1 <= tmin or u0 >= history_ms:
+                continue
 
-            total_rate += norm_j * _exp_kernel_integral_normed(
-                u0, u1, tau, tmin
-            )
+            # Truncate the source contribution at history_ms.
+            if u1 > history_ms:
+                u1 = history_ms
+
+            total_rate += norms[j] * _exp_kernel_integral_normed(u0,u1,tau, tmin)
 
     return total_rate, diff
 
@@ -1945,7 +2250,7 @@ def pure_exp_pdf(t_grid, s, tau, tmin, c, d, k,
                      pS2s_struct, s1_times_ms,
                      window_start_ms, window_stop_ms,
                      A=None, r0=None, r_p=None,
-                     model='pure exp'):
+                     model='pure exp', history_ms=15000.0):
     """
        Pure exponential model.
 
@@ -2030,7 +2335,8 @@ def pure_exp_pdf(t_grid, s, tau, tmin, c, d, k,
         s1_sorted,
         model_flag,
         live_starts,
-        live_stops
+        live_stops,
+        float(history_ms)
     )
 
 @njit(cache=False, parallel=True, fastmath=True)
@@ -2039,7 +2345,7 @@ def _exp_additive_pdf_basic_consistent(t_grid, s, n, tau, f_exp, tmin,
                                        A, r0, r_p,
                                        s2_t_sorted, s2_area_sorted, s2_rng_sorted,
                                        s2_r_sorted, s1_t_sorted, model_flag,
-                                       live_starts, live_stops):
+                                       live_starts, live_stops, history_ms):
     """
     Core additive exponential + power-law evaluator.
 
@@ -2079,7 +2385,8 @@ def _exp_additive_pdf_basic_consistent(t_grid, s, n, tau, f_exp, tmin,
 
     for i in prange(t_grid.size):
         ti = t_grid[i]
-
+        left = _lower_bound(s2_t_sorted, ti - history_ms)
+        right = _lower_bound(s2_t_sorted, ti - tmin)
         # Dead zone -> zero rate
         # if _in_dead_s2(ti, s2_t_sorted, tmin) or _in_dead_s1(ti, s1_t_sorted):
         #     diff[i] = 0.0
@@ -2087,7 +2394,7 @@ def _exp_additive_pdf_basic_consistent(t_grid, s, n, tau, f_exp, tmin,
 
         acc = 0.0
 
-        for j in range(s2_t_sorted.size):
+        for j in range(left, right):
             dt = ti - s2_t_sorted[j]
 
             if dt > tmin:
@@ -2115,6 +2422,12 @@ def _exp_additive_pdf_basic_consistent(t_grid, s, n, tau, f_exp, tmin,
             u0 = live_starts[ell] - s2_t_sorted[j]
             u1 = live_stops[ell] - s2_t_sorted[j]
 
+            if u1 <= tmin or u0 >= history_ms:
+                continue
+
+            if u1 > history_ms:
+                u1 = history_ms
+
             total_rate += norm_j * _additive_kernel_integral_normed(
                 u0, u1, n, tau, f_exp, tmin
             )
@@ -2124,7 +2437,7 @@ def _exp_additive_pdf_basic_consistent(t_grid, s, n, tau, f_exp, tmin,
 def new_exp_additive_pdf(t_grid, s, n, tau, f_exp, tmin, c, d, k,
                          pS2s_struct, s1_times_ms,
                          window_start_ms, window_stop_ms,
-                         A=None, r0=None, r_p=None,
+                         A=None, r0=None, r_p=None, history_ms = 15000.0,
                          model='exp_additive'):
     """
     Additive exponential + power-law model.
@@ -2223,7 +2536,7 @@ def new_exp_additive_pdf(t_grid, s, n, tau, f_exp, tmin, c, d, k,
         s1_sorted,
         model_flag,
         live_starts,
-        live_stops
+        live_stops, float(history_ms)
     )
 @njit(cache=False)
 def _exp_kernel_value_normed(dt, tau, tmin):
@@ -2300,6 +2613,73 @@ def _additive_kernel_integral_normed(u0, u1, n, tau, f_exp, tmin):
 
     return f_exp * exp_int + (1.0 - f_exp) * pl_int
 
+@njit(cache=False)
+def _multi_exp_weights_from_n(tau_grid, n, tmin):
+    """
+    Weights for log-spaced survival-conditioned exponentials.
+
+    Because each exponential kernel is conditional on dt > tmin,
+
+        h_i(dt) = (1/tau_i) exp(-(dt - tmin)/tau_i),
+
+    the weights need an exp(-tmin/tau_i) factor to approximate
+    a power law in dt rather than a power law in (dt - tmin).
+    """
+    weights = np.empty(tau_grid.size, dtype=np.float64)
+
+    total = 0.0
+    for i in range(tau_grid.size):
+        tau = tau_grid[i]
+        w = (tau ** (1.0 - n)) * np.exp(-tmin / tau)
+        weights[i] = w
+        total += w
+
+    if total <= 0.0:
+        for i in range(tau_grid.size):
+            weights[i] = 0.0
+        return weights
+
+    for i in range(tau_grid.size):
+        weights[i] /= total
+
+    return weights
+
+
+@njit(cache=False)
+def _multi_exp_powerlaw_like_kernel_value(dt, tmin, tau_grid, weights):
+    """
+    Sum of many normalized exponentials.
+    """
+    if dt <= tmin:
+        return 0.0
+
+    acc = 0.0
+    for i in range(tau_grid.size):
+        acc += weights[i] * _exp_kernel_value_normed(dt, tau_grid[i], tmin)
+
+    return acc
+
+
+@njit(cache=False)
+def _multi_exp_powerlaw_like_kernel_integral(u0, u1, tmin, tau_grid, weights):
+    """
+    Integral of the many-exponential kernel over [u0, u1].
+    """
+
+    if u1 <= u0 or u1 <= tmin:
+        return 0.0
+
+    acc = 0.0
+    for i in range(tau_grid.size):
+        acc += weights[i] * _exp_kernel_integral_normed(
+            u0,
+            u1,
+            tau_grid[i],
+            tmin,
+        )
+
+    return acc
+
 # ------------------------------------------------------------------------------------------------------------------
 #I'm gonna define an entirely new thing to take as an input some extra sources which are distinc from pS2's but may have
 #an impact on the actual fit in a positive way.
@@ -2354,6 +2734,234 @@ def _weak_source_like_pdf_basic_consistent(t_grid, q, n, tau, f_exp, tmin,
             )
 
     return total_rate, diff
+
+def multi_exp_pdf(
+    t_grid,
+    s,
+    n,
+    tmin,
+    c,
+    d,
+    k,
+    pS2s_struct,
+    s1_times_ms,
+    window_start_ms,
+    window_stop_ms,
+    A=None,
+    r0=None,
+    r_p=None,
+    history_ms=15000.0,
+    model="multi_exp",
+    n_tau=12,
+    tau_min=0.1,
+    tau_max=3000.0,
+):
+    """
+    Many-exponential power-law-like model.
+
+    The exponential time constants are fixed and log-spaced.
+    The slope parameter n controls the mixture weights.
+    """
+
+    s2_t = pS2s_struct["time_since_start"].astype(np.float64)
+    s2_area = pS2s_struct["area"].astype(np.float64)
+    s2_rng = (pS2s_struct["range_50p_area"] / 1e6).astype(np.float64)
+
+    if "r" in pS2s_struct.dtype.names:
+        s2_r = pS2s_struct["r"].astype(np.float64)
+    else:
+        s2_r = np.zeros_like(s2_t)
+
+    order = np.argsort(s2_t)
+
+    s2_t_sorted = np.ascontiguousarray(s2_t[order])
+    s2_area_sorted = np.ascontiguousarray(s2_area[order])
+    s2_rng_sorted = np.ascontiguousarray(s2_rng[order])
+    s2_r_sorted = np.ascontiguousarray(s2_r[order])
+
+    area_ref = np.median(s2_area_sorted)
+    width_ref = np.median(s2_rng_sorted)
+
+    if area_ref <= 0:
+        area_ref = 1.0
+
+    if width_ref <= 0:
+        width_ref = 1.0
+
+    s2_area_scaled = np.ascontiguousarray(s2_area_sorted / area_ref)
+    s2_rng_scaled = np.ascontiguousarray(s2_rng_sorted / width_ref)
+
+    if s1_times_ms is not None and len(s1_times_ms) > 0:
+        s1_sorted = np.ascontiguousarray(np.sort(s1_times_ms.astype(np.float64)))
+    else:
+        s1_sorted = np.zeros(0, dtype=np.float64)
+
+    dead_intervals = build_dead_intervals(
+        window_start_ms,
+        window_stop_ms,
+        s2_t_sorted,
+        s1_sorted,
+        tmin,
+    )
+
+    live_intervals = build_live_intervals(
+        window_start_ms,
+        window_stop_ms,
+        dead_intervals,
+    )
+
+    live_starts = np.ascontiguousarray(
+        np.array([x[0] for x in live_intervals], dtype=np.float64)
+    )
+
+    live_stops = np.ascontiguousarray(
+        np.array([x[1] for x in live_intervals], dtype=np.float64)
+    )
+
+    model_flag = 1 if model == "radial" else 0
+
+    if model_flag == 0:
+        A = 0.0
+        r0 = 0.0
+        r_p = 1.0
+
+    tau_grid = np.ascontiguousarray(
+        np.logspace(
+            np.log10(tau_min),
+            np.log10(tau_max),
+            int(n_tau),
+        ).astype(np.float64)
+    )
+
+    return _multi_exp_pdf_basic_consistent(
+        np.ascontiguousarray(t_grid.astype(np.float64)),
+        float(s),
+        float(n),
+        float(tmin),
+        float(c),
+        float(d),
+        float(k),
+        float(A),
+        float(r0),
+        float(r_p),
+        s2_t_sorted,
+        s2_area_scaled,
+        s2_rng_scaled,
+        s2_r_sorted,
+        s1_sorted,
+        model_flag,
+        live_starts,
+        live_stops,
+        float(history_ms),
+        tau_grid,
+    )
+
+@njit(cache=False, parallel=True, fastmath=True)
+def _multi_exp_pdf_basic_consistent(
+    t_grid,
+    s,
+    n,
+    tmin,
+    c,
+    d,
+    k,
+    A,
+    r0,
+    r_p,
+    s2_t_sorted,
+    s2_area_sorted,
+    s2_rng_sorted,
+    s2_r_sorted,
+    s1_t_sorted,
+    model_flag,
+    live_starts,
+    live_stops,
+    history_ms,
+    tau_grid,
+):
+    """
+    Many-exponential approximation to a power-law-like delayed electron kernel.
+
+    The tau grid is fixed. The weights are controlled by n.
+    """
+
+    if n <= 1.0 or tmin <= 0.0:
+        diff_bad = np.zeros(t_grid.size)
+        return 0.0, diff_bad
+
+    if model_flag == 1:
+        norms = _compute_norms_radial(
+            s,
+            c,
+            d,
+            A,
+            r0,
+            r_p,
+            s2_area_sorted,
+            s2_rng_sorted,
+            s2_r_sorted,
+        )
+    else:
+        norms = _compute_norms_basic(
+            s,
+            c,
+            d,
+            s2_area_sorted,
+            s2_rng_sorted,
+        )
+
+    diff = np.full(t_grid.size, k)
+    weights = _multi_exp_weights_from_n(tau_grid, n, tmin)
+
+    for i in prange(t_grid.size):
+        ti = t_grid[i]
+
+        left = _lower_bound(s2_t_sorted, ti - history_ms)
+        right = _lower_bound(s2_t_sorted, ti - tmin)
+
+        acc = 0.0
+
+        for j in range(left, right):
+            dt = ti - s2_t_sorted[j]
+
+            if dt > tmin:
+                acc += norms[j] * _multi_exp_powerlaw_like_kernel_value(
+                    dt,
+                    tmin,
+                    tau_grid,
+                    weights
+                )
+
+        diff[i] += acc
+
+    total_rate = 0.0
+
+    for ell in range(live_starts.size):
+        total_rate += k * (live_stops[ell] - live_starts[ell])
+
+    for j in range(s2_t_sorted.size):
+        norm_j = norms[j]
+
+        for ell in range(live_starts.size):
+            u0 = live_starts[ell] - s2_t_sorted[j]
+            u1 = live_stops[ell] - s2_t_sorted[j]
+
+            if u1 <= tmin or u0 >= history_ms:
+                continue
+
+            if u1 > history_ms:
+                u1 = history_ms
+
+            total_rate += norm_j * _multi_exp_powerlaw_like_kernel_integral(
+                u0,
+                u1,
+                tmin,
+                tau_grid,
+                weights
+            )
+
+    return total_rate, diff
+
 def weak_source_like_pdf(t_grid,
         q, n, tau, f_exp, tmin,
         source_like_struct,

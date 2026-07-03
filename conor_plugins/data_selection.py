@@ -13,9 +13,11 @@ import straxen
 #import cutax
 import numpy as np
 from numpy.lib import recfunctions as rfn
+from conor_plugins import SubTyping_Class, count_ne, Wrong_pS2_relabel
 import matplotlib.pyplot as plt
 import sys
 import getpass
+import pandas as pd
 user = getpass.getuser()
 
 #sys.path.append('/home/ford2/project_code/plugins')
@@ -24,12 +26,9 @@ user = getpass.getuser()
 #st = cutax.xenonnt_offline(xedocs_version = "global_v12", #xedocs version not being recognised?
                            #output_folder = f'/scratch/midway2/{user}/strax_data')
 st = straxen.contexts.xenonnt_online()
-from SubTyping_Class import PeaksSubtypes
-from Wrong_pS2_relabel import PS2_relabel
 
-from count_ne import PiecewiseInfo, CountNElectron
 
-plugins_to_register = [PeaksSubtypes, PS2_relabel, PiecewiseInfo, CountNElectron]
+plugins_to_register = [SubTyping_Class.PeaksSubtypes, Wrong_pS2_relabel.PS2_relabel, count_ne.PiecewiseInfo, count_ne.CountNElectron]
 for i in plugins_to_register:
     st.register(i)
     print(i.provides, i.__version__)
@@ -71,8 +70,8 @@ def data_selection_ku(run_id, peaks = None, show_plot = True, drop_columns = Tru
                                'channel', 'area_decile_from_midpoint', 'saturated_channel', 'data_top', 
                                'max_gap', 'max_goodness_of_split']
             peaks = st.get_array(run_id['name'],
-                                 targets = ['peaks', 'peak_basics', 'peak_proximity', 
-                                            'peak_positions', 'subtype_mask', 'pS2_relabel', 'n_electron_rec'],
+                                 targets = ['peaks', 'peak_basics','peak_proximity', 'peak_positions', 
+                                            'subtype_mask', 'pS2_relabel', 'n_electron_rec'],
                                  drop_columns = columns_to_drop)
         else:
             peaks = st.get_array(run_id['name'],
@@ -180,12 +179,29 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
     """
 
     print("\n" + "-" * 115 + "\n")
-
-    print(f"Now looking at run: {run_id['name']}")
+    if  type(run_id) == str:
+        print(f"Now looking at run: {run_id}")
+    else:
+        print(f"Now looking at run: {run_id['name']}")
 
     global run_start #Necessary?
-    run_start = int(run_id['start'].values[0])
-    run_end = int(run_id['end'].values[0])
+    if type(run_id) == str and peaks is not None:
+        run_start = peaks["time"].min()
+        run_end = peaks["time"].max()
+    else:
+        if pd.isna(run_id["start"].values[0]):
+                 #run 026195
+                #run_start = int(1628071231446000000)
+                #run_end  = int(1628071324212000000)
+                 #run 028749
+                run_start = int(1632192923000000000)
+                run_end   = int(1632194726417555200)
+                 #run 044281
+                #run_start = int(1655106353000000000)
+                #run_end = int(1655106567173528320)
+        else:
+                run_start = int(run_id["start"].values[0])
+                run_end   = int(run_id["end"].values[0])
 
     #Get peaks data, add some fields for extra info
     if peaks is None:
@@ -196,8 +212,8 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
                                'channel', 'area_decile_from_midpoint', 'saturated_channel', 'data_top', 
                                'max_gap', 'max_goodness_of_split']
             peaks = st.get_array(run_id['name'],
-                                 targets = ['peaks', 'peak_basics', 'peak_proximity', 
-                                            'peak_positions', 'subtype_mask', 'pS2_relabel', 'n_electron_rec'],
+                                 targets = ['peaks', 'peak_basics', 'peak_proximity', 'peak_positions', 
+                                            'subtype_mask', 'pS2_relabel', 'n_electron_rec'],
                                  drop_columns = columns_to_drop)
         else:
             peaks = st.get_array(run_id['name'],
@@ -211,40 +227,58 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
         Not going to do as priority since I'd have to spend ages reprocessing all the other data, 
         was going to take time ranges from later in the run regardless
         """
+        print(peaks)
         time_since_start = (peaks['time'] - run_start) / int(1e6) #Actual time since start of run in ms
-        r = np.sqrt(peaks['x']**2 + peaks['y']**2)
-        theta = np.arctan2(peaks['y'], peaks['x'])
+        r = np.sqrt(peaks['x_cnf']**2 + peaks['y_cnf']**2)
+        theta = np.arctan2(peaks['y_cnf'], peaks['x_cnf'])
         peaks_amended = rfn.append_fields(peaks, ['time_since_start', 'r', 'theta'], 
                                   [time_since_start, r, theta], usemask = False)
     else:
-        if 'time_since_start' not in peaks.dtype.names:
-            print("Adding necessary fields")
-            time_since_start = (peaks['time'] - run_start) / int(1e6)
-            r = np.sqrt(peaks['x']**2 + peaks['y']**2)
-            theta = np.arctan2(peaks['y'], peaks['x'])
-            peaks_amended = rfn.append_fields(peaks, ['time_since_start', 'r', 'theta'], 
-                                    [time_since_start, r, theta], usemask=False)
+        if isinstance(peaks, pd.DataFrame):
+            # only runs if obj is a pandas DataFrame
+            print("This is a DataFrame")
+            if 'time_since_start' not in peaks.keys():
+                print('adding necessary fields')
+                time_since_start = (peaks['time'] - run_start) / int(1e6)
+                r = np.sqrt(peaks['x'] ** 2 + peaks['y'] ** 2)
+                theta = np.arctan2(peaks['y'], peaks['x'])
+
+                peaks_amended = peaks.copy()
+
+                peaks_amended["time_since_start"] = time_since_start
+                peaks_amended["r"] = r
+                peaks_amended["theta"] = theta
         else:
-            print("Peaks all good")
-            peaks_amended = peaks
+
+            if 'time_since_start' not in peaks.dtype.names:
+                print("Adding necessary fields")
+                time_since_start = (peaks['time'] - run_start) / int(1e6)
+                r = np.sqrt(peaks['x']**2 + peaks['y']**2)
+                theta = np.arctan2(peaks['y'], peaks['x'])
+                peaks_amended = rfn.append_fields(peaks, ['time_since_start', 'r', 'theta'],
+                                        [time_since_start, r, theta], usemask=False)
+            else:
+                print("Peaks all good")
+                peaks_amended = peaks
     
 
     #Collect DAQ veto intervals if they exist
-    if st.is_stored(run_id['name'].values[0], 'veto_intervals'):
-        vetos = st.get_array(run_id['name'].values[0], 'veto_intervals')
+    if type(run_id) != str:
+        if st.is_stored(run_id['name'].values[0], 'veto_intervals'):
+            vetos = st.get_array(run_id['name'].values[0], 'veto_intervals')
 
-        start_time_ms = (vetos['time'] - int(run_id['start'].value)) / int(1e6)
-        end_time_ms = (vetos['endtime'] - int(run_id['start'].value)) / int(1e6)
+            start_time_ms = (vetos['time'] - int(run_id['start'].value)) / int(1e6)
+            end_time_ms = (vetos['endtime'] - int(run_id['start'].value)) / int(1e6)
 
-        vetos = rfn.append_fields(vetos, ['start(ms)', 'end(ms)'], 
-                                  [start_time_ms, end_time_ms], usemask = False)
-    else:
-        print("DAQ veto intervals not found, oop")
-        vetos = None
-        # if 'time_since_start' not in peaks.dtype.names:
-        #     r = np.sqrt(peaks['x']**2 + peaks['y']**2)
-        #     theta = np.arctan2(peaks['y'], peaks['x'])
-        #     peaks = rfn.append_fields(peaks, ['r', 'theta'], [r, theta], usemask=False)
+            vetos = rfn.append_fields(vetos, ['start(ms)', 'end(ms)'],
+                                      [start_time_ms, end_time_ms], usemask = False)
+        else:
+            print("DAQ veto intervals not found, oop")
+            vetos = None
+            # if 'time_since_start' not in peaks.dtype.names:
+            #     r = np.sqrt(peaks['x']**2 + peaks['y']**2)
+            #     theta = np.arctan2(peaks['y'], peaks['x'])
+            #     peaks = rfn.append_fields(peaks, ['r', 'theta'], [r, theta], usemask=False)
 
 
     #---------------------------------------------------------------------------------------------------
@@ -331,6 +365,7 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
     #---------------------------------------------------------------------------------------------------
 
     #Prompt electron cut. Also going to cut for 5 fdt (maybe less) for after an S1 to remove photoionisation electrons
+    pS2s_for_prompt_cut = pS2s.copy()
 
     remaining_DEs = prompt_electron_cut(pS2s, all_DEs, S1s)
 
@@ -374,19 +409,18 @@ def data_selection_new(run_id, peaks = None, show_plots = False, drop_columns = 
         plt.show()
 
     pS2s_final, DEs_final = Other_quality_cuts(run_id, pS2s, DEs_left, show_plots = show_plots, fiducial_cut = fiducial_cut)
-
+    ##debugging things below here
     diagnose_selection(peaks_amended, pS2s_final, DEs_final, S1s)
 
-    a_ms = 39545.981
-    b_ms = 39555.981
+    debug = {
+        "pS2s_for_prompt_cut": pS2s_for_prompt_cut,
+        "all_DEs_before_prompt": all_DEs,
+        "remaining_DEs_after_prompt": remaining_DEs,
+        "DEs_after_area_ne_cut": DEs_left,
+        "DEs_final": DEs_final,
+    }
 
-    a_ns = int(run_start + a_ms * 1e6)
-    b_ns = int(run_start + b_ms * 1e6)
-
-    st.plot_peaks(run_id["name"].values[0], time_range=(a_ns, b_ns))
-    plt.show()
-
-    return pS2s_final, DEs_final, S1s, peaks_amended, vetos
+    return pS2s_final, DEs_final, S1s, peaks_amended, vetos, debug
 
 def prompt_electron_cut(pS2s, all_DEs, S1s = None, selection = 'new'):
     """
